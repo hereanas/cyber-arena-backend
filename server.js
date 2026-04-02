@@ -1,7 +1,7 @@
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors'); // استدعاء مكتبة الجسر
-
+require('dotenv').config(); // تحميل المتغيرات من ملف .env
 const app = express();
 const port = 3000;
 
@@ -18,12 +18,10 @@ app.use(cors());
 app.use(express.json()); 
 app.use(express.urlencoded({ extended: true }));
 
+
 const pool = new Pool({
-    user: 'postgres',
-    host: 'localhost',
-    database: 'cyberarena',
-    password: 'root', // ⚠️ عدل هذي
-    port: 5432,
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
 });
 
 // 1. API جلب التحديات
