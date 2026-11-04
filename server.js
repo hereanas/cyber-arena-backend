@@ -1,153 +1,281 @@
 const express = require('express');
 const { Pool } = require('pg');
-const cors = require('cors'); // استدعاء مكتبة الجسر
-require('dotenv').config(); // تحميل المتغيرات من ملف .env
-const app = express();
-const port = 3000;
-
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcrypt');
-const jsonwebtoken = require('jsonwebtoken');
+const jwt = require('jsonwebtoken');
+const path = require('path');
+require('dotenv').config();
 
-// مفتاح سري جداً لتوقيع تصاريح الدخول (المفروض بالشركات يكون مخفي في ملف .env)
-const JWT_SECRET = 'Super_Secret_CTF_Key_2026_!@#';
+// ---------------------------------------------------------------------------
+// Environment validation
+// ---------------------------------------------------------------------------
+const DATABASE_URL = process.env.DATABASE_URL;
+const JWT_SECRET = process.env.JWT_SECRET;
+const PORT = parseInt(process.env.PORT, 10) || 3000;
+const CORS_ORIGINS = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(',').map(s => s.trim())
+  : [`http://localhost:${PORT}`];
 
-// السماح للواجهة حقتنا (React) إنها تتصل بالسيرفر بدون ما يكرشها المتصفح
-app.use(cors());
+if (!DATABASE_URL) {
+  console.error('FATAL: DATABASE_URL environment variable is required.');
+  process.exit(1);
+}
+if (!JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET environment variable is required. Generate one with:');
+  console.error('  node -e "console.log(require(\'crypto\').randomBytes(64).toString(\'hex\'))"');
+  process.exit(1);
+}
 
-// مهم جداً: هذا السطر يخلي السيرفر يفهم البيانات اللي تجي بصيغة JSON من واجهة React
-app.use(express.json()); 
-app.use(express.urlencoded({ extended: true }));
-
-
+// ---------------------------------------------------------------------------
+// Database
+// ---------------------------------------------------------------------------
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  connectionString: DATABASE_URL,
+  ssl: DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false },
 });
 
-// 1. API جلب التحديات
-app.get('/api/challenges', async (req, res) => {
-    try {
-        const result = await pool.query('SELECT id, title, description, points FROM challenges');
-        res.json(result.rows);
-    } catch (err) {
-        res.status(500).json({ error: 'Server error' });
-    }
-}); 
+// ---------------------------------------------------------------------------
+// Express app
+// ---------------------------------------------------------------------------
+const app = express();
 
-// 2. API جلب لوحة الصدارة
-app.get('/api/leaderboard', async (req, res) => {
-    try {
-        const result = await pool.query('SELECT username, score FROM users ORDER BY score DESC LIMIT 10');
-        res.json(result.rows);
-    } catch (err) {
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(cors({ origin: CORS_ORIGINS }));
+app.use(express.json({ limit: '16kb' }));
+app.use(express.urlencoded({ extended: true, limit: '16kb' }));
 
-// 3. API التحقق من الـ Flag (الحين يرجع JSON بدل واجهات HTML)
-app.post('/api/submit', async (req, res) => {
-    const { flag: userFlag, username } = req.body;
+const apiLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 300 });
+app.use('/api/', apiLimiter);
 
-    try {
-        const challengeQuery = 'SELECT * FROM challenges WHERE flag = $1';
-        const challengeResult = await pool.query(challengeQuery, [userFlag]);
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30 });
 
-        if (challengeResult.rows.length === 0) {
-            return res.status(400).json({ status: 'error', message: '❌ الـ Flag غلط! حاول مرة ثانية.' });
-        }
+app.use(express.static(path.join(__dirname, 'public')));
 
-        const challenge = challengeResult.rows[0]; 
-
-        let userQuery = 'SELECT id, score FROM users WHERE username = $1';
-        let userResult = await pool.query(userQuery, [username]);
-        
-        if (userResult.rows.length === 0) {
-            const insertUser = 'INSERT INTO users (username, score) VALUES ($1, 0) RETURNING id, score';
-            userResult = await pool.query(insertUser, [username]);
-        }
-        
-        const user = userResult.rows[0]; 
-
-        const checkSubmission = 'SELECT * FROM submissions WHERE user_id = $1 AND challenge_id = $2';
-        const submissionResult = await pool.query(checkSubmission, [user.id, challenge.id]);
-
-        if (submissionResult.rows.length > 0) {
-            return res.status(400).json({ status: 'warning', message: '⚠️ حليت هذا التحدي مسبقاً! لا تحاول تخدع النظام.' });
-        }
-
-        await pool.query('INSERT INTO submissions (user_id, challenge_id) VALUES ($1, $2)', [user.id, challenge.id]);
-        const updateScore = 'UPDATE users SET score = score + $1 WHERE id = $2 RETURNING score';
-        const finalUserResult = await pool.query(updateScore, [challenge.points, user.id]);
-        
-        res.json({ 
-            status: 'success', 
-            message: `✅ كفو! الـ Flag صحيح لتحدي ${challenge.title}`, 
-            points: challenge.points,
-            newScore: finalUserResult.rows[0].score
-        });
-
-    } catch (err) {
-        res.status(500).json({ status: 'error', message: 'حصل خطأ في السيرفر!' });
-    }
-});
-
-// 🟢 مسار تسجيل حساب جديد
-app.post('/api/register', async (req, res) => {
-  const { username, password } = req.body;
+// ---------------------------------------------------------------------------
+// Auth middleware
+// ---------------------------------------------------------------------------
+function authenticate(req, res, next) {
+  const header = req.headers.authorization;
+  if (!header || !header.startsWith('Bearer ')) {
+    return res.status(401).json({ status: 'error', message: 'Authentication required.' });
+  }
   try {
-    // 1. التشفير: نخلط الباسورد بـ 10 طبقات حماية (Salt) عشان الهاكرز ما يقدرون يقرونه
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const decoded = jwt.verify(header.slice(7), JWT_SECRET);
+    req.user = { id: decoded.id, username: decoded.username };
+    next();
+  } catch {
+    return res.status(401).json({ status: 'error', message: 'Invalid or expired token.' });
+  }
+}
 
-    // 2. الحفظ في قاعدة البيانات
+// ---------------------------------------------------------------------------
+// Health
+// ---------------------------------------------------------------------------
+app.get('/api/health', async (_req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ status: 'ok' });
+  } catch {
+    res.status(503).json({ status: 'error', message: 'Database unreachable.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Register
+// ---------------------------------------------------------------------------
+app.post('/api/register', authLimiter, async (req, res) => {
+  const { username, password, avatar } = req.body;
+
+  if (!username || typeof username !== 'string' || username.trim().length < 2 || username.trim().length > 50) {
+    return res.status(400).json({ status: 'error', message: 'Username must be 2-50 characters.' });
+  }
+  if (!password || typeof password !== 'string' || password.length < 6) {
+    return res.status(400).json({ status: 'error', message: 'Password must be at least 6 characters.' });
+  }
+
+  const allowedAvatars = ['🥷', '🕵️‍♂️', '🤖', '👽'];
+  const safeAvatar = allowedAvatars.includes(avatar) ? avatar : '🥷';
+
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
     const result = await pool.query(
-      'INSERT INTO users (username, password, score) VALUES ($1, $2, 0) RETURNING id, username',
-      [username, hashedPassword]
+      'INSERT INTO users (username, password, avatar, score) VALUES ($1, $2, $3, 0) RETURNING id, username, avatar, score',
+      [username.trim(), hashedPassword, safeAvatar]
     );
 
-    // 3. إصدار تصريح الدخول (Token)
-    const token = jsonwebtoken.sign({ id: result.rows[0].id, username }, JWT_SECRET, { expiresIn: '24h' });
+    const user = result.rows[0];
+    const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '24h' });
 
-    res.json({ status: 'success', message: 'تم تسجيل الحساب بنجاح!', token });
+    res.json({ status: 'success', message: 'Account created.', token, user: { id: user.id, username: user.username, avatar: user.avatar, score: user.score } });
   } catch (err) {
-    if (err.code === '23505') { // كود الخطأ في PostgreSQL لو الاسم موجود مسبقاً
-      res.status(400).json({ status: 'warning', message: 'هذا الهاكر مسجل عندنا من قبل، اختر اسم ثاني أو سجل دخول!' });
-    } else {
-      console.error(err);
-      res.status(500).json({ status: 'error', message: 'خطأ داخلي في السيرفر' });
+    if (err.code === '23505') {
+      return res.status(409).json({ status: 'error', message: 'Username already taken.' });
     }
+    console.error('Register error:', err.message);
+    res.status(500).json({ status: 'error', message: 'Internal server error.' });
   }
 });
 
-// 🔵 مسار تسجيل الدخول
-app.post('/api/login', async (req, res) => {
+// ---------------------------------------------------------------------------
+// Login
+// ---------------------------------------------------------------------------
+app.post('/api/login', authLimiter, async (req, res) => {
   const { username, password } = req.body;
+
+  if (!username || !password) {
+    return res.status(400).json({ status: 'error', message: 'Username and password are required.' });
+  }
+
   try {
-    // 1. نبحث عن الهاكر في قاعدة البيانات
-    const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+    const result = await pool.query('SELECT id, username, password, avatar, score FROM users WHERE username = $1', [username]);
     const user = result.rows[0];
 
-    // إذا الاسم مو موجود
-    if (!user) {
-      return res.status(400).json({ status: 'error', message: 'بيانات الدخول غير صحيحة! ACCESS DENIED' });
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+      return res.status(401).json({ status: 'error', message: 'Invalid credentials.' });
     }
 
-    // 2. نقارن الباسورد اللي دخله بالـ (الطلاسم) المشفرة في الداتا بيس
-    const validPassword = await bcrypt.compare(password, user.password);
-    if (!validPassword) {
-      return res.status(400).json({ status: 'error', message: 'بيانات الدخول غير صحيحة! ACCESS DENIED' });
-    }
+    const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '24h' });
 
-    // 3. إصدار تصريح الدخول (Token) بعد نجاح التحقق
-    const token = jsonwebtoken.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '24h' });
-
-    res.json({ status: 'success', message: 'Welcome back, Operative.', token });
+    res.json({ status: 'success', message: 'Welcome back.', token, user: { id: user.id, username: user.username, avatar: user.avatar, score: user.score } });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ status: 'error', message: 'خطأ داخلي في السيرفر' });
+    console.error('Login error:', err.message);
+    res.status(500).json({ status: 'error', message: 'Internal server error.' });
   }
 });
 
+// ---------------------------------------------------------------------------
+// Current user profile
+// ---------------------------------------------------------------------------
+app.get('/api/me', authenticate, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT id, username, avatar, score FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ status: 'error', message: 'User not found.' });
+    }
 
-app.listen(port, () => {
-    console.log(`🚀 API السيرفر جاهز ومستعد لاستقبال الطلبات على: http://localhost:${port}`);
+    const solvedResult = await pool.query(
+      'SELECT challenge_id FROM submissions WHERE user_id = $1',
+      [req.user.id]
+    );
+
+    const user = result.rows[0];
+    user.solved = solvedResult.rows.map(r => r.challenge_id);
+
+    res.json(user);
+  } catch (err) {
+    console.error('Profile error:', err.message);
+    res.status(500).json({ status: 'error', message: 'Internal server error.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Challenges (public list — never expose flags)
+// ---------------------------------------------------------------------------
+app.get('/api/challenges', async (_req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT id, title, description, category, difficulty, points FROM challenges ORDER BY points ASC'
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Challenges error:', err.message);
+    res.status(500).json({ status: 'error', message: 'Internal server error.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Leaderboard (public — only username, avatar, score)
+// ---------------------------------------------------------------------------
+app.get('/api/leaderboard', async (_req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT username, avatar, score FROM users ORDER BY score DESC, username ASC LIMIT 50'
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Leaderboard error:', err.message);
+    res.status(500).json({ status: 'error', message: 'Internal server error.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Flag submission (authenticated, race-safe)
+// ---------------------------------------------------------------------------
+app.post('/api/submit', authenticate, async (req, res) => {
+  const { challenge_id, flag } = req.body;
+
+  if (!challenge_id || !flag || typeof flag !== 'string') {
+    return res.status(400).json({ status: 'error', message: 'challenge_id and flag are required.' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const challengeResult = await client.query(
+      'SELECT id, title, points, flag FROM challenges WHERE id = $1',
+      [challenge_id]
+    );
+    if (challengeResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ status: 'error', message: 'Challenge not found.' });
+    }
+
+    const challenge = challengeResult.rows[0];
+
+    if (flag.trim() !== challenge.flag) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ status: 'error', message: 'Incorrect flag. Try again.' });
+    }
+
+    // INSERT with ON CONFLICT to atomically prevent duplicates
+    const insertResult = await client.query(
+      'INSERT INTO submissions (user_id, challenge_id) VALUES ($1, $2) ON CONFLICT (user_id, challenge_id) DO NOTHING RETURNING id',
+      [req.user.id, challenge.id]
+    );
+
+    if (insertResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ status: 'warning', message: 'You already solved this challenge.' });
+    }
+
+    const scoreResult = await client.query(
+      'UPDATE users SET score = score + $1 WHERE id = $2 RETURNING score',
+      [challenge.points, req.user.id]
+    );
+
+    await client.query('COMMIT');
+
+    res.json({
+      status: 'success',
+      message: `Correct! You solved "${challenge.title}".`,
+      points: challenge.points,
+      newScore: scoreResult.rows[0].score,
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Submit error:', err.message);
+    res.status(500).json({ status: 'error', message: 'Internal server error.' });
+  } finally {
+    client.release();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// SPA fallback
+// ---------------------------------------------------------------------------
+app.get('*', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// ---------------------------------------------------------------------------
+// Start
+// ---------------------------------------------------------------------------
+app.listen(PORT, () => {
+  console.log(`CyberArena API listening on http://localhost:${PORT}`);
 });

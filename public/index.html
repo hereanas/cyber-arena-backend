@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CyberArena CTF</title>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --neon: #0f0;
+      --neon-dim: rgba(0,255,0,0.15);
+      --bg: #050505;
+      --panel: #111;
+      --border: #333;
+      --text: #e0e0e0;
+      --text-muted: #888;
+      --danger: #f44;
+      --warn: #fa0;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Fira Code', monospace;
+      font-size: 14px;
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    /* -- Animations -------------------------------------------------------- */
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes glow {
+      0%, 100% { box-shadow: 0 0 6px var(--neon); }
+      50%      { box-shadow: 0 0 20px var(--neon); }
+    }
+
+    .fade-in { animation: fadeIn .4s ease-out; }
+
+    /* -- Utility ---------------------------------------------------------- */
+    .hidden  { display: none !important; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+
+    /* -- Toast ------------------------------------------------------------ */
+    #toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      padding: 12px 24px; border-radius: 6px; font-size: 13px;
+      z-index: 100; pointer-events: none; opacity: 0;
+      transition: opacity .3s;
+      max-width: 90vw; text-align: center;
+    }
+    #toast.show { opacity: 1; pointer-events: auto; }
+    #toast.success { background: #0a2e0a; border: 1px solid var(--neon); color: var(--neon); }
+    #toast.error   { background: #2e0a0a; border: 1px solid var(--danger); color: var(--danger); }
+    #toast.warning { background: #2e2a0a; border: 1px solid var(--warn); color: var(--warn); }
+
+    /* -- Forms & Inputs --------------------------------------------------- */
+    input[type="text"], input[type="password"] {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--neon);
+      padding: 12px 16px;
+      font-family: inherit;
+      font-size: 14px;
+      outline: none;
+      border-radius: 4px;
+      width: 100%;
+      max-width: 340px;
+      transition: border-color .2s;
+    }
+    input:focus { border-color: var(--neon); }
+    input::placeholder { color: var(--text-muted); }
+
+    button, .btn {
+      background: var(--neon);
+      color: #000;
+      border: none;
+      padding: 12px 24px;
+      font-size: 14px;
+      font-weight: 700;
+      font-family: inherit;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: background .2s, box-shadow .2s;
+    }
+    button:hover, .btn:hover { background: #fff; box-shadow: 0 0 12px var(--neon); }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+    button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--neon); outline-offset: 2px; }
+
+    .btn-sm { padding: 8px 16px; font-size: 13px; }
+    .btn-outline {
+      background: transparent; color: var(--neon); border: 1px solid var(--neon);
+    }
+    .btn-outline:hover { background: var(--neon-dim); }
+
+    /* -- Panels ----------------------------------------------------------- */
+    .panel {
+      display: none;
+      padding: 32px 16px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    .panel.active { display: block; }
+
+    h1, h2, h3 { color: var(--neon); text-shadow: 0 0 8px rgba(0,255,0,.4); margin-top: 0; }
+    h1 { font-size: clamp(1.4rem, 4vw, 2rem); }
+    h2 { font-size: clamp(1.1rem, 3vw, 1.5rem); }
+
+    /* -- Auth Panel ------------------------------------------------------- */
+    #auth-panel { text-align: center; padding-top: 60px; }
+    .auth-tabs { display: flex; justify-content: center; gap: 16px; margin-bottom: 24px; }
+    .auth-tab {
+      background: none; color: var(--text-muted); border: none; padding: 8px 16px;
+      font-family: inherit; font-size: 14px; cursor: pointer; border-bottom: 2px solid transparent;
+    }
+    .auth-tab.active { color: var(--neon); border-bottom-color: var(--neon); }
+    .auth-form { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+
+    .avatar-grid { display: flex; justify-content: center; gap: 12px; margin: 12px 0; flex-wrap: wrap; }
+    .avatar-option {
+      font-size: 2.4rem; cursor: pointer; padding: 8px;
+      border: 2px solid transparent; border-radius: 8px;
+      transition: .2s; line-height: 1;
+    }
+    .avatar-option:hover, .avatar-option[aria-checked="true"] {
+      border-color: var(--neon); background: var(--neon-dim); transform: scale(1.1);
+    }
+
+    /* -- Nav Bar ---------------------------------------------------------- */
+    .nav-bar {
+      display: flex; align-items: center; gap: 4px;
+      padding: 12px 16px; background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+    .nav-link {
+      color: var(--text-muted); cursor: pointer; text-decoration: none;
+      font-size: 13px; padding: 6px 12px; border-radius: 4px; transition: .2s;
+      white-space: nowrap;
+    }
+    .nav-link:hover, .nav-link.active { color: var(--neon); background: var(--neon-dim); }
+    .nav-right { margin-left: auto; display: flex; align-items: center; gap: 12px; font-size: 13px; flex-wrap: wrap; }
+
+    /* -- Challenge Cards --------------------------------------------------- */
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      padding: 20px; margin-bottom: 16px; border-radius: 8px;
+      transition: border-color .2s;
+    }
+    .card:hover { border-color: var(--neon); }
+    .card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+    .card-title { color: #fff; font-size: 15px; font-weight: 700; margin: 0; }
+    .card-meta { display: flex; gap: 8px; flex-wrap: wrap; }
+    .badge {
+      font-size: 11px; padding: 2px 8px; border-radius: 4px;
+      background: rgba(255,255,255,.06); color: var(--text-muted);
+      white-space: nowrap;
+    }
+    .badge-pts { color: var(--neon); border: 1px solid rgba(0,255,0,.3); }
+    .badge-solved { background: rgba(0,255,0,.1); color: var(--neon); border: 1px solid var(--neon); }
+    .card-desc { color: var(--text-muted); margin: 12px 0; font-size: 13px; word-break: break-word; }
+    .submit-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .submit-row input { flex: 1; min-width: 0; max-width: none; }
+
+    /* -- Leaderboard ------------------------------------------------------ */
+    .rank-item {
+      background: var(--panel); margin-bottom: 8px; padding: 14px 20px;
+      display: flex; justify-content: space-between; align-items: center;
+      border-radius: 6px; font-size: 14px; border: 1px solid var(--border);
+    }
+    .rank-1 { animation: glow 2.5s infinite; border-color: gold; color: gold; }
+    .rank-2 { border-color: silver; color: silver; }
+    .rank-3 { border-color: #cd7f32; color: #cd7f32; }
+    .rank-badge { min-width: 36px; text-align: center; }
+
+    /* -- Loading / Empty -------------------------------------------------- */
+    .loading, .empty { text-align: center; color: var(--text-muted); padding: 40px 0; }
+
+    /* -- Mobile ----------------------------------------------------------- */
+    @media (max-width: 600px) {
+      .card { padding: 16px; }
+      .rank-item { padding: 12px; font-size: 13px; }
+      .nav-bar { gap: 2px; padding: 8px 12px; }
+      .nav-link { padding: 6px 8px; font-size: 12px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ================================================================== -->
+<!-- AUTH PANEL                                                          -->
+<!-- ================================================================== -->
+<div id="auth-panel" class="panel active fade-in">
+  <h1>[ CyberArena_OS ]</h1>
+  <p style="color:var(--text-muted)">Capture The Flag Platform</p>
+
+  <div class="auth-tabs" role="tablist">
+    <button class="auth-tab active" role="tab" aria-selected="true" data-tab="login" onclick="switchAuthTab('login')">Login</button>
+    <button class="auth-tab" role="tab" aria-selected="false" data-tab="register" onclick="switchAuthTab('register')">Register</button>
+  </div>
+
+  <!-- Login Form -->
+  <form id="login-form" class="auth-form" onsubmit="handleLogin(event)">
+    <label class="sr-only" for="login-user">Username</label>
+    <input id="login-user" type="text" placeholder="Username" autocomplete="username" required minlength="2" maxlength="50">
+    <label class="sr-only" for="login-pass">Password</label>
+    <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password" required minlength="6">
+    <button type="submit" id="login-btn">Access Terminal →</button>
+  </form>
+
+  <!-- Register Form -->
+  <form id="register-form" class="auth-form hidden" onsubmit="handleRegister(event)">
+    <p style="color:var(--text-muted);margin:0">Choose your avatar</p>
+    <div class="avatar-grid" role="radiogroup" aria-label="Avatar selection">
+      <span class="avatar-option" role="radio" aria-checked="true" tabindex="0" onclick="selectAvatar(this,'🥷')" onkeydown="avatarKey(event,this,'🥷')">🥷</span>
+      <span class="avatar-option" role="radio" aria-checked="false" tabindex="0" onclick="selectAvatar(this,'🕵️‍♂️')" onkeydown="avatarKey(event,this,'🕵️‍♂️')">🕵️‍♂️</span>
+      <span class="avatar-option" role="radio" aria-checked="false" tabindex="0" onclick="selectAvatar(this,'🤖')" onkeydown="avatarKey(event,this,'🤖')">🤖</span>
+      <span class="avatar-option" role="radio" aria-checked="false" tabindex="0" onclick="selectAvatar(this,'👽')" onkeydown="avatarKey(event,this,'👽')">👽</span>
+    </div>
+    <label class="sr-only" for="reg-user">Username</label>
+    <input id="reg-user" type="text" placeholder="Choose a username" autocomplete="username" required minlength="2" maxlength="50">
+    <label class="sr-only" for="reg-pass">Password</label>
+    <input id="reg-pass" type="password" placeholder="Password (min 6 chars)" autocomplete="new-password" required minlength="6">
+    <button type="submit" id="reg-btn">Create Account →</button>
+  </form>
+</div>
+
+<!-- ================================================================== -->
+<!-- NAV BAR                                                            -->
+<!-- ================================================================== -->
+<nav id="nav-bar" class="nav-bar hidden" aria-label="Main navigation">
+  <a class="nav-link active" role="button" tabindex="0" onclick="switchPanel('challenges')" onkeydown="navKey(event,'challenges')">/> Challenges</a>
+  <a class="nav-link" role="button" tabindex="0" onclick="switchPanel('leaderboard')" onkeydown="navKey(event,'leaderboard')">/> Leaderboard</a>
+  <div class="nav-right">
+    <span id="user-status" aria-live="polite"></span>
+    <button class="btn-sm btn-outline" onclick="logout()">Logout</button>
+  </div>
+</nav>
+
+<!-- ================================================================== -->
+<!-- CHALLENGES PANEL                                                   -->
+<!-- ================================================================== -->
+<main id="challenges-panel" class="panel">
+  <h2>/> Available Challenges</h2>
+  <div id="challenges-list">
+    <p class="loading">Loading challenges...</p>
+  </div>
+</main>
+
+<!-- ================================================================== -->
+<!-- LEADERBOARD PANEL                                                  -->
+<!-- ================================================================== -->
+<div id="leaderboard-panel" class="panel" role="region" aria-label="Leaderboard">
+  <h2>/> Global Leaderboard</h2>
+  <div id="leaderboard-list">
+    <p class="loading">Loading leaderboard...</p>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<!-- TOAST                                                              -->
+<!-- ================================================================== -->
+<div id="toast" role="alert" aria-live="assertive"></div>
+
+<!-- ================================================================== -->
+<!-- SCRIPT                                                             -->
+<!-- ================================================================== -->
+<script>
+(function() {
+  'use strict';
+
+  const API = window.location.origin;
+  let currentUser = null;
+  let solvedSet = new Set();
+  let selectedAvatar = '🥷';
+  let toastTimer = null;
+
+  // -- Toast ---------------------------------------------------------------
+  function toast(msg, type) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = 'show ' + type;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.className = '', 3500);
+  }
+  window.toast = toast;
+
+  // -- API helper ----------------------------------------------------------
+  async function api(path, opts = {}) {
+    const token = localStorage.getItem('token');
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    const res = await fetch(API + path, { ...opts, headers });
+    const data = await res.json();
+    if (!res.ok) {
+      if (res.status === 401 && token) { logout(); }
+      throw data;
+    }
+    return data;
+  }
+
+  // -- Auth tabs -----------------------------------------------------------
+  window.switchAuthTab = function(tab) {
+    document.querySelectorAll('.auth-tab').forEach(t => {
+      const isActive = t.dataset.tab === tab;
+      t.classList.toggle('active', isActive);
+      t.setAttribute('aria-selected', isActive);
+    });
+    document.getElementById('login-form').classList.toggle('hidden', tab !== 'login');
+    document.getElementById('register-form').classList.toggle('hidden', tab !== 'register');
+  };
+
+  // -- Avatar selection ----------------------------------------------------
+  window.selectAvatar = function(el, emoji) {
+    document.querySelectorAll('.avatar-option').forEach(o => o.setAttribute('aria-checked', 'false'));
+    el.setAttribute('aria-checked', 'true');
+    selectedAvatar = emoji;
+  };
+  window.avatarKey = function(e, el, emoji) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectAvatar(el, emoji); }
+  };
+  window.navKey = function(e, panel) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchPanel(panel); }
+  };
+
+  // -- Login ---------------------------------------------------------------
+  window.handleLogin = async function(e) {
+    e.preventDefault();
+    const btn = document.getElementById('login-btn');
+    btn.disabled = true;
+    try {
+      const data = await api('/api/login', {
+        method: 'POST',
+        body: JSON.stringify({
+          username: document.getElementById('login-user').value.trim(),
+          password: document.getElementById('login-pass').value,
+        }),
+      });
+      localStorage.setItem('token', data.token);
+      toast('Welcome back, ' + data.user.username + '.', 'success');
+      await enterApp();
+    } catch (err) {
+      toast(err.message || 'Login failed.', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  // -- Register ------------------------------------------------------------
+  window.handleRegister = async function(e) {
+    e.preventDefault();
+    const btn = document.getElementById('reg-btn');
+    btn.disabled = true;
+    try {
+      const data = await api('/api/register', {
+        method: 'POST',
+        body: JSON.stringify({
+          username: document.getElementById('reg-user').value.trim(),
+          password: document.getElementById('reg-pass').value,
+          avatar: selectedAvatar,
+        }),
+      });
+      localStorage.setItem('token', data.token);
+      toast('Account created! Welcome, ' + data.user.username + '.', 'success');
+      await enterApp();
+    } catch (err) {
+      toast(err.message || 'Registration failed.', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  // -- Logout --------------------------------------------------------------
+  window.logout = function() {
+    localStorage.removeItem('token');
+    currentUser = null;
+    solvedSet.clear();
+    document.getElementById('auth-panel').classList.add('active');
+    document.getElementById('nav-bar').classList.add('hidden');
+    document.querySelectorAll('#challenges-panel, #leaderboard-panel').forEach(p => p.classList.remove('active'));
+    document.getElementById('login-form').reset();
+    document.getElementById('register-form').reset();
+    switchAuthTab('login');
+  };
+
+  // -- Enter app (after login/register or restore) -------------------------
+  async function enterApp() {
+    try {
+      currentUser = await api('/api/me');
+      solvedSet = new Set(currentUser.solved || []);
+    } catch {
+      logout();
+      return;
+    }
+    updateStatus();
+    document.getElementById('auth-panel').classList.remove('active');
+    document.getElementById('nav-bar').classList.remove('hidden');
+    switchPanel('challenges');
+  }
+
+  function updateStatus() {
+    if (!currentUser) return;
+    document.getElementById('user-status').textContent =
+      (currentUser.avatar || '🥷') + ' ' + currentUser.username + ' | ' + currentUser.score + ' pts';
+  }
+
+  // -- Switch panels -------------------------------------------------------
+  window.switchPanel = function(name) {
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-link').forEach(n => n.classList.remove('active'));
+    const panel = document.getElementById(name + '-panel');
+    if (panel) { panel.classList.add('active'); panel.classList.add('fade-in'); }
+    document.querySelectorAll('.nav-link').forEach(n => {
+      if (n.textContent.toLowerCase().includes(name)) n.classList.add('active');
+    });
+    if (name === 'challenges') loadChallenges();
+    if (name === 'leaderboard') loadLeaderboard();
+  };
+
+  // -- Load challenges -----------------------------------------------------
+  async function loadChallenges() {
+    const container = document.getElementById('challenges-list');
+    try {
+      const challenges = await api('/api/challenges');
+      if (challenges.length === 0) {
+        container.innerHTML = '<p class="empty">No challenges available yet.</p>';
+        return;
+      }
+      container.innerHTML = challenges.map(c => {
+        const solved = solvedSet.has(c.id);
+        const diffColors = { easy: '#0f0', medium: '#fa0', hard: '#f44' };
+        const diffColor = diffColors[c.difficulty] || '#888';
+        return `
+          <div class="card fade-in" id="challenge-${c.id}">
+            <div class="card-header">
+              <h3 class="card-title">${esc(c.title)}</h3>
+              <div class="card-meta">
+                <span class="badge">${esc(c.category)}</span>
+                <span class="badge" style="color:${diffColor}">${esc(c.difficulty)}</span>
+                <span class="badge badge-pts">${c.points} pts</span>
+                ${solved ? '<span class="badge badge-solved">Solved</span>' : ''}
+              </div>
+            </div>
+            <p class="card-desc">${esc(c.description)}</p>
+            ${solved
+              ? '<p style="color:var(--neon);font-size:13px">You already solved this challenge.</p>'
+              : `<form class="submit-row" onsubmit="submitFlag(event, ${c.id})">
+                   <label class="sr-only" for="flag-${c.id}">Flag for ${esc(c.title)}</label>
+                   <input id="flag-${c.id}" type="text" placeholder="CTF{...}" required>
+                   <button type="submit" class="btn-sm">Submit</button>
+                 </form>`
+            }
+          </div>`;
+      }).join('');
+    } catch (err) {
+      container.innerHTML = '<p class="empty">Failed to load challenges.</p>';
+    }
+  }
+
+  // -- Submit flag ---------------------------------------------------------
+  window.submitFlag = async function(e, challengeId) {
+    e.preventDefault();
+    const input = document.getElementById('flag-' + challengeId);
+    const btn = e.target.querySelector('button');
+    btn.disabled = true;
+    try {
+      const data = await api('/api/submit', {
+        method: 'POST',
+        body: JSON.stringify({ challenge_id: challengeId, flag: input.value.trim() }),
+      });
+      toast(data.message, 'success');
+      solvedSet.add(challengeId);
+      if (currentUser) currentUser.score = data.newScore;
+      updateStatus();
+      loadChallenges();
+    } catch (err) {
+      toast(err.message || 'Submission failed.', err.status === 'warning' ? 'warning' : 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  // -- Load leaderboard ----------------------------------------------------
+  async function loadLeaderboard() {
+    const container = document.getElementById('leaderboard-list');
+    try {
+      const board = await api('/api/leaderboard');
+      if (board.length === 0) {
+        container.innerHTML = '<p class="empty">No entries yet. Be the first!</p>';
+        return;
+      }
+      const medals = ['👑', '⚔️', '🛡️'];
+      container.innerHTML = board.map((u, i) => {
+        const rankClass = i < 3 ? ' rank-' + (i + 1) : '';
+        const medal = medals[i] || '#' + (i + 1);
+        return `
+          <div class="rank-item${rankClass}" role="listitem">
+            <span><span class="rank-badge">${medal}</span> ${esc(u.avatar || '🥷')} ${esc(u.username)}</span>
+            <span>${u.score} pts</span>
+          </div>`;
+      }).join('');
+    } catch {
+      container.innerHTML = '<p class="empty">Failed to load leaderboard.</p>';
+    }
+  }
+
+  // -- HTML escape ---------------------------------------------------------
+  function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  // -- Session restore on load ---------------------------------------------
+  async function init() {
+    if (localStorage.getItem('token')) {
+      await enterApp();
+    }
+  }
+  init();
+})();
+</script>
+</body>
+</html>
